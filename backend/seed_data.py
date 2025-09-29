@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 import uuid
 
 # Setup
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto", bcrypt__rounds=12)
 
 async def seed_demo_data():
     """Seed the database with demo users and sample tokens"""
