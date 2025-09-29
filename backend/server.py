@@ -217,6 +217,18 @@ async def register_user(user_data: UserCreate):
         }
     }
 
+@api_router.get("/auth/me")
+async def get_current_user_info(current_user: User = Depends(get_current_user)):
+    return {
+        "user": {
+            "id": current_user.id,
+            "name": current_user.name,
+            "email": current_user.email,
+            "role": current_user.role,
+            "phone": current_user.phone
+        }
+    }
+
 @api_router.post("/auth/login")
 async def login_user(user_data: UserLogin):
     user = await db.users.find_one({"email": user_data.email})
