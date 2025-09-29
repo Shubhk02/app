@@ -36,7 +36,7 @@ app = FastAPI(title="Hospital Token Management System", version="1.0.0")
 api_router = APIRouter(prefix="/api")
 
 # Enums
-class UserRole(str, IntEnum):
+class UserRole(str):
     PATIENT = "patient"
     STAFF = "staff"
     ADMIN = "admin"
