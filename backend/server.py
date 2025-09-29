@@ -36,7 +36,9 @@ app = FastAPI(title="Hospital Token Management System", version="1.0.0")
 api_router = APIRouter(prefix="/api")
 
 # Enums
-class UserRole(str):
+from enum import Enum
+
+class UserRole(str, Enum):
     PATIENT = "patient"
     STAFF = "staff"
     ADMIN = "admin"
@@ -49,7 +51,7 @@ class TokenPriority(IntEnum):
     REPORT_PICKUP = 5 # Document collection - <30 mins
     CONSULTATION = 6  # Report discussion - <1 hour
 
-class TokenStatus(str):
+class TokenStatus(str, Enum):
     ACTIVE = "active"
     COMPLETED = "completed"
     CANCELLED = "cancelled"
