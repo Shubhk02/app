@@ -49,7 +49,7 @@ class TokenPriority(IntEnum):
     REPORT_PICKUP = 5 # Document collection - <30 mins
     CONSULTATION = 6  # Report discussion - <1 hour
 
-class TokenStatus(str, IntEnum):
+class TokenStatus(str):
     ACTIVE = "active"
     COMPLETED = "completed"
     CANCELLED = "cancelled"
