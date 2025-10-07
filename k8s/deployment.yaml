@@ -1,0 +1,157 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: hospital-token-system
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: app-secrets
+  namespace: hospital-token-system
+type: Opaque
+data:
+  # These values should be base64 encoded
+  MONGO_URL: bW9uZ29kYjovL21vbmdvZGI6MjcwMTc= # mongodb://mongodb:27017
+  JWT_SECRET_KEY: c2VjcmV0LWtleS1iYXNlNjQ= # Replace in production
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  namespace: hospital-token-system
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: frontend
+  template:
+    metadata:
+      labels:
+        app: frontend
+    spec:
+      containers:
+      - name: frontend
+        image: your-registry/hospital-token-frontend:latest
+        ports:
+        - containerPort: 80
+        env:
+        - name: REACT_APP_API_URL
+          value: "http://backend-service:8000"
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 30
+          periodSeconds: 30
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  namespace: hospital-token-system
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: backend
+  template:
+    metadata:
+      labels:
+        app: backend
+    spec:
+      containers:
+      - name: backend
+        image: your-registry/hospital-token-backend:latest
+        ports:
+        - containerPort: 8000
+        env:
+        - name: MONGO_URL
+          valueFrom:
+            secretKeyRef:
+              name: app-secrets
+              key: MONGO_URL
+        - name: JWT_SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: app-secrets
+              key: JWT_SECRET_KEY
+        - name: DB_NAME
+          value: "hospital_token_db"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 30
+          periodSeconds: 30
+        resources:
+          requests:
+            cpu: "200m"
+            memory: "256Mi"
+          limits:
+            cpu: "1000m"
+            memory: "1Gi"
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend-service
+  namespace: hospital-token-system
+spec:
+  type: LoadBalancer
+  ports:
+  - port: 80
+    targetPort: 80
+  selector:
+    app: frontend
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend-service
+  namespace: hospital-token-system
+spec:
+  type: ClusterIP
+  ports:
+  - port: 8000
+    targetPort: 8000
+  selector:
+    app: backend
+
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: app-ingress
+  namespace: hospital-token-system
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+spec:
+  rules:
+  - http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: frontend-service
+            port:
+              number: 80
+      - path: /api
+        pathType: Prefix
+        backend:
+          service:
+            name: backend-service
+            port:
+              number: 8000

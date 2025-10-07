@@ -1,0 +1,40 @@
+version: '3.8'
+
+services:
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: hospital-mgmt-frontend
+    ports:
+      - "3000:80"
+    environment:
+      - REACT_APP_API_URL=http://localhost:8000
+    depends_on:
+      - backend
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: hospital-mgmt-backend
+    ports:
+      - "8000:8000"
+    environment:
+      - MONGO_URL=mongodb://mongodb:27017
+      - DB_NAME=hospital_management_db
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-default-dev-secret-key}
+      - CORS_ORIGINS=http://localhost:3000
+    depends_on:
+      - mongodb
+
+  mongodb:
+    image: mongo:6
+    container_name: hospital-mgmt-mongodb
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb_data:/data/db
+
+volumes:
+  mongodb_data:

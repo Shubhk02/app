@@ -7,9 +7,10 @@ from datetime import datetime
 from typing import Dict, Any, Optional
 
 class HospitalTokenSystemTester:
-    def __init__(self, base_url="https://patientrack.preview.emergentagent.com/api"):
+    def __init__(self, base_url="http://localhost:8000"):
         self.base_url = base_url
         self.tokens = {}  # Store tokens for different users
+        self.project_name = "Hospital Management"
         self.test_results = {
             'total_tests': 0,
             'passed_tests': 0,

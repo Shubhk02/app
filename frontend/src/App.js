@@ -3,6 +3,7 @@ import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-d
 import axios from 'axios';
 import { Toaster } from '@/components/ui/sonner';
 import { toast } from 'sonner';
+import api from './utils/api';
 import './App.css';
 
 // Import components
@@ -11,8 +12,8 @@ import PatientDashboard from './components/PatientDashboard';
 import StaffDashboard from './components/StaffDashboard';
 import AdminDashboard from './components/AdminDashboard';
 
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
-const API = `${BACKEND_URL}/api`;
+const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || 'http://localhost:8000';
+const API = `${BACKEND_URL}/api/v1`;
 
 // Set up axios defaults
 axios.defaults.baseURL = API;
@@ -37,10 +38,9 @@ export const AuthProvider = ({ children }) => {
 
   useEffect(() => {
     if (token) {
-      axios.defaults.headers.common['Authorization'] = `Bearer ${token}`;
       // Verify token validity
-      axios.get('/auth/me').then(response => {
-        setUser(response.data.user);
+      api.get('/auth/me').then(response => {
+        setUser(response.data);
       }).catch(() => {
         logout();
       }).finally(() => {
@@ -55,14 +55,12 @@ export const AuthProvider = ({ children }) => {
     setUser(userData);
     setToken(userToken);
     localStorage.setItem('token', userToken);
-    axios.defaults.headers.common['Authorization'] = `Bearer ${userToken}`;
   };
 
   const logout = () => {
     setUser(null);
     setToken(null);
     localStorage.removeItem('token');
-    delete axios.defaults.headers.common['Authorization'];
   };
 
   return (

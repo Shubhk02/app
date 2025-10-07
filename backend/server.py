@@ -29,15 +29,50 @@ SECRET_KEY = os.environ.get("JWT_SECRET_KEY", "hospital-token-management-secret-
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_HOURS = 24
 
-# Create the main app without a prefix
+# Create the main app
 app = FastAPI(title="Hospital Token Management System", version="1.0.0")
+
+# Configure CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000"],  # React app URL
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Mount the API router
+app.include_router(api_router)
+
+# Add health check endpoint at root level
+@app.get("/health")
+async def health_check():
+    """
+    Health check endpoint for the application.
+    Returns basic health information including:
+    - Status
+    - Timestamp
+    - MongoDB connection status
+    """
+    try:
+        await db.command("ping")
+        mongo_status = "healthy"
+    except Exception as e:
+        mongo_status = f"unhealthy: {str(e)}"
+
+    return {
+        "status": "healthy",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "version": "1.0.0",
+        "services": {
+            "mongodb": mongo_status
+        }
+    }
 
 # Create a router with the /api prefix
 api_router = APIRouter(prefix="/api")
 
 # Enums
-from enum import Enum
-
 class UserRole(str, Enum):
     PATIENT = "patient"
     STAFF = "staff"
@@ -97,9 +132,9 @@ class Token(BaseModel):
 class TokenCreate(BaseModel):
     category: str
     symptoms: Optional[str] = None
-    patient_id: Optional[str] = None  # For staff creating tokens
-    patient_name: Optional[str] = None  # For staff creating tokens
-    patient_phone: Optional[str] = None  # For staff creating tokens
+    patient_id: Optional[str] = None
+    patient_name: Optional[str] = None
+    patient_phone: Optional[str] = None
 
 class QueuePosition(BaseModel):
     token_id: str
@@ -191,12 +226,10 @@ async def get_current_admin(current_user: User = Depends(get_current_user)):
 # Authentication Routes
 @api_router.post("/auth/register")
 async def register_user(user_data: UserCreate):
-    # Check if user exists
     existing_user = await db.users.find_one({"email": user_data.email})
     if existing_user:
         raise HTTPException(status_code=400, detail="Email already registered")
     
-    # Create user
     hashed_password = hash_password(user_data.password)
     user_dict = user_data.dict()
     user_dict.pop("password")
@@ -205,7 +238,6 @@ async def register_user(user_data: UserCreate):
     user = User(**user_dict)
     await db.users.insert_one(user.dict())
     
-    # Create access token
     access_token = create_access_token(data={"sub": user.id})
     
     return {
@@ -234,10 +266,10 @@ async def get_current_user_info(current_user: User = Depends(get_current_user)):
 @api_router.post("/auth/login")
 async def login_user(user_data: UserLogin):
     user = await db.users.find_one({"email": user_data.email})
-    if not user or not verify_password(user_data.password, user["password_hash"]):
+    if not user or not verify_password(user_data.password, user.get("password_hash", "")):
         raise HTTPException(status_code=401, detail="Invalid email or password")
     
-    if not user["is_active"]:
+    if not user.get("is_active", True):
         raise HTTPException(status_code=400, detail="Account is deactivated")
     
     access_token = create_access_token(data={"sub": user["id"]})
@@ -249,7 +281,8 @@ async def login_user(user_data: UserLogin):
             "id": user["id"],
             "name": user["name"],
             "email": user["email"],
-            "role": user["role"]
+            "role": user["role"],
+            "phone": user.get("phone", "")
         }
     }
 
@@ -262,12 +295,20 @@ async def create_token(token_data: TokenCreate, current_user: User = Depends(get
         patient_name = current_user.name
         patient_phone = current_user.phone
     else:
-        # Staff/Admin creating token for patient
         if not token_data.patient_id or not token_data.patient_name or not token_data.patient_phone:
             raise HTTPException(status_code=400, detail="Patient information required for staff token creation")
         patient_id = token_data.patient_id
         patient_name = token_data.patient_name
         patient_phone = token_data.patient_phone
+    
+    # Check for existing active token for patient
+    existing_token = await db.tokens.find_one({
+        "patient_id": patient_id,
+        "status": TokenStatus.ACTIVE
+    })
+    
+    if existing_token:
+        raise HTTPException(status_code=400, detail="Patient already has an active token")
     
     # Assign priority based on category
     priority = assign_priority_by_category(token_data.category)
@@ -279,17 +320,16 @@ async def create_token(token_data: TokenCreate, current_user: User = Depends(get
     existing_tokens = await db.tokens.find({"status": TokenStatus.ACTIVE}).to_list(1000)
     position = 1
     
-    # Find correct position based on priority
+    # Find correct position based on priority (lower value = higher priority)
     for existing_token in existing_tokens:
-        if priority <= existing_token["priority_level"]:
-            continue
-        position += 1
+        if priority >= existing_token["priority_level"]:
+            position += 1
     
     # Update positions of lower priority tokens
     await db.tokens.update_many(
         {
             "status": TokenStatus.ACTIVE,
-            "priority_level": {"$gte": priority},
+            "priority_level": {"$gt": priority},
             "position": {"$gte": position}
         },
         {"$inc": {"position": 1}}
@@ -332,7 +372,6 @@ async def get_user_tokens(current_user: User = Depends(get_current_user)):
     if current_user.role == UserRole.PATIENT:
         tokens = await db.tokens.find({"patient_id": current_user.id}).to_list(100)
     else:
-        # Staff and Admin can see all tokens
         tokens = await db.tokens.find().to_list(1000)
     
     return [Token(**token) for token in tokens]
@@ -340,7 +379,6 @@ async def get_user_tokens(current_user: User = Depends(get_current_user)):
 # Queue Routes
 @api_router.get("/queue")
 async def get_queue(current_user: User = Depends(get_current_user)):
-    # Get active tokens sorted by position
     tokens = await db.tokens.find(
         {"status": TokenStatus.ACTIVE}
     ).sort("position", 1).to_list(1000)
@@ -391,6 +429,38 @@ async def complete_token(token_id: str, current_user: User = Depends(get_current
     
     return {"message": "Token completed successfully"}
 
+@api_router.put("/tokens/{token_id}/cancel")
+async def cancel_token(token_id: str, current_user: User = Depends(get_current_user)):
+    token = await db.tokens.find_one({"id": token_id})
+    if not token:
+        raise HTTPException(status_code=404, detail="Token not found")
+    
+    # Patients can only cancel their own tokens
+    if current_user.role == UserRole.PATIENT and token["patient_id"] != current_user.id:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    # Update token status
+    await db.tokens.update_one(
+        {"id": token_id},
+        {
+            "$set": {
+                "status": TokenStatus.CANCELLED,
+                "updated_at": datetime.now(timezone.utc)
+            }
+        }
+    )
+    
+    # Update positions of remaining tokens
+    await db.tokens.update_many(
+        {
+            "status": TokenStatus.ACTIVE,
+            "position": {"$gt": token["position"]}
+        },
+        {"$inc": {"position": -1}}
+    )
+    
+    return {"message": "Token cancelled successfully"}
+
 @api_router.put("/tokens/{token_id}/priority")
 async def update_token_priority(
     token_id: str, 
@@ -406,6 +476,9 @@ async def update_token_priority(
     
     old_priority = token["priority_level"]
     old_position = token["position"]
+    
+    if old_priority == new_priority:
+        return {"message": "Priority unchanged"}
     
     # Remove from current position
     await db.tokens.update_many(
@@ -424,9 +497,8 @@ async def update_token_priority(
     
     new_position = 1
     for existing_token in existing_tokens:
-        if new_priority <= existing_token["priority_level"]:
-            continue
-        new_position += 1
+        if new_priority >= existing_token["priority_level"]:
+            new_position += 1
     
     # Update positions of tokens that will be after this one
     await db.tokens.update_many(
@@ -483,7 +555,6 @@ async def create_staff_user(user_data: UserCreate, current_user: User = Depends(
 # Analytics Routes
 @api_router.get("/analytics/dashboard")
 async def get_dashboard_analytics(current_user: User = Depends(get_current_staff)):
-    # Get today's statistics
     today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
     
     total_tokens_today = await db.tokens.count_documents({
@@ -499,7 +570,7 @@ async def get_dashboard_analytics(current_user: User = Depends(get_current_staff
         "updated_at": {"$gte": today_start}
     })
     
-    # Calculate average wait time (simplified)
+    # Calculate average wait time
     tokens_with_wait = await db.tokens.find({
         "status": TokenStatus.COMPLETED,
         "updated_at": {"$gte": today_start}
@@ -525,14 +596,6 @@ async def get_dashboard_analytics(current_user: User = Depends(get_current_staff
         "completed_tokens_today": completed_tokens_today,
         "average_wait_time": round(avg_wait_time, 2),
         "priority_distribution": priority_distribution
-    }
-
-# Health check
-@api_router.get("/health")
-async def health_check():
-    return {
-        "status": "healthy",
-        "timestamp": datetime.now(timezone.utc).isoformat()
     }
 
 # Include the router in the main app

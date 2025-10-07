@@ -8,7 +8,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { toast } from 'sonner';
-import axios from 'axios';
+import api from '../utils/api';
 
 const LoginPage = () => {
   const navigate = useNavigate();
@@ -41,14 +41,36 @@ const LoginPage = () => {
     setLoading(true);
 
     try {
-      const response = await axios.post('/auth/login', loginForm);
+      const response = await api.post('/auth/login', {
+        email: loginForm.email,
+        password: loginForm.password
+      });
+      
       const { access_token, user: userData } = response.data;
       
       login(userData, access_token);
       toast.success('Login successful!');
-      navigate(`/${userData.role}`);
+      // Small delay to ensure state is updated before navigation
+      setTimeout(() => {
+        navigate(`/${userData.role}`);
+      }, 100);
     } catch (error) {
-      toast.error(error.response?.data?.detail || 'Login failed');
+      // Handle validation errors from backend
+      if (error.response?.data?.detail) {
+        const errorDetail = error.response.data.detail;
+        if (Array.isArray(errorDetail)) {
+          // Multiple validation errors - show the first one
+          toast.error(errorDetail[0].msg || 'Validation error');
+        } else if (typeof errorDetail === 'string') {
+          // Single error message
+          toast.error(errorDetail);
+        } else {
+          // Fallback for other error types
+          toast.error('Login failed');
+        }
+      } else {
+        toast.error(error.message || 'Login failed');
+      }
     } finally {
       setLoading(false);
     }
@@ -76,14 +98,38 @@ const LoginPage = () => {
 
     try {
       const { confirmPassword, ...registrationData } = registerForm;
-      const response = await axios.post('/auth/register', registrationData);
-      const { access_token, user: userData } = response.data;
+      const response = await api.post('/auth/register', registrationData);
+      const { access_token, token_type, user: userData } = response.data;
+
+      if (!access_token || !userData) {
+        throw new Error('Invalid server response');
+      }
       
       login(userData, access_token);
       toast.success('Registration successful!');
-      navigate(`/${userData.role}`);
+      // Small delay to ensure state is updated before navigation
+      setTimeout(() => {
+        navigate(`/${userData.role}`);
+      }, 100);
     } catch (error) {
-      toast.error(error.response?.data?.detail || 'Registration failed');
+      console.error('Registration error:', error);
+      
+      // Handle validation errors from backend
+      if (error.response?.data?.detail) {
+        const errorDetail = error.response.data.detail;
+        if (Array.isArray(errorDetail)) {
+          // Multiple validation errors - show the first one
+          toast.error(errorDetail[0].msg || 'Validation error');
+        } else if (typeof errorDetail === 'string') {
+          // Single error message
+          toast.error(errorDetail);
+        } else {
+          // Fallback for other error types
+          toast.error('Registration failed');
+        }
+      } else {
+        toast.error(error.message || 'Registration failed');
+      }
     } finally {
       setLoading(false);
     }
