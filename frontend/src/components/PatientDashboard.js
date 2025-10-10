@@ -6,7 +6,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
 import { toast } from 'sonner';
-import axios from 'axios';
+import api from '../utils/api';
+import useWebSocket from '../hooks/useWebSocket';
 
 const PatientDashboard = () => {
   const { user, logout } = useAuth();
@@ -15,6 +16,10 @@ const PatientDashboard = () => {
   const [loading, setLoading] = useState(false);
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [queueData, setQueueData] = useState([]);
+  
+  // WebSocket connection for real-time updates
+  const wsUrl = user ? `ws://localhost:8000/ws/${user.id}/${user.role}` : null;
+  const { isConnected, lastMessage, error } = useWebSocket(wsUrl);
 
   const [tokenForm, setTokenForm] = useState({
     category: '',
@@ -34,18 +39,43 @@ const PatientDashboard = () => {
     fetchTokens();
     fetchQueue();
     
-    // Set up polling for real-time updates
+    // Set up polling for real-time updates (fallback)
     const interval = setInterval(() => {
       fetchTokens();
       fetchQueue();
-    }, 30000); // Poll every 30 seconds
+    }, 60000); // Poll every 60 seconds as fallback
 
     return () => clearInterval(interval);
   }, []);
 
+  // Handle WebSocket messages for real-time updates
+  useEffect(() => {
+    if (lastMessage) {
+      switch (lastMessage.type) {
+        case 'token_update':
+          // Update token data
+          if (lastMessage.data.status === 'completed' && activeToken?.id === lastMessage.data.id) {
+            setActiveToken(null);
+            toast.success('Your token has been completed!');
+          } else if (lastMessage.data.id) {
+            // Token created or updated
+            fetchTokens();
+            fetchQueue();
+          }
+          break;
+        case 'queue_update':
+          // Update queue data
+          setQueueData(lastMessage.data);
+          break;
+        default:
+          break;
+      }
+    }
+  }, [lastMessage, activeToken]);
+
   const fetchTokens = async () => {
     try {
-      const response = await axios.get('/tokens');
+      const response = await api.get('/tokens');
       const tokens = response.data;
       
       // Find active token
@@ -62,7 +92,7 @@ const PatientDashboard = () => {
 
   const fetchQueue = async () => {
     try {
-      const response = await axios.get('/queue');
+      const response = await api.get('/queue');
       setQueueData(response.data.queue || []);
     } catch (error) {
       console.error('Error fetching queue:', error);
@@ -80,7 +110,7 @@ const PatientDashboard = () => {
     setLoading(true);
     
     try {
-      const response = await axios.post('/tokens', tokenForm);
+      const response = await api.post('/tokens', tokenForm);
       toast.success('Token created successfully!');
       setActiveToken(response.data);
       setShowCreateForm(false);
@@ -130,6 +160,13 @@ const PatientDashboard = () => {
               <p className="text-gray-600">Welcome back, {user?.name}</p>
             </div>
             <div className="flex items-center space-x-4">
+              {/* Real-time connection status */}
+              <div className="flex items-center space-x-2">
+                <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-green-500' : 'bg-red-500'}`}></div>
+                <span className="text-xs text-gray-500">
+                  {isConnected ? 'Live' : 'Offline'}
+                </span>
+              </div>
               <Button
                 onClick={() => {
                   fetchTokens();

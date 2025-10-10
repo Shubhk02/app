@@ -9,7 +9,7 @@ import { Badge } from '@/components/ui/badge';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { toast } from 'sonner';
-import axios from 'axios';
+import api from '../utils/api';
 
 const AdminDashboard = () => {
   const { user, logout } = useAuth();
@@ -43,7 +43,7 @@ const AdminDashboard = () => {
 
   const fetchAnalytics = async () => {
     try {
-      const response = await axios.get('/analytics/dashboard');
+      const response = await api.get('/analytics/dashboard');
       setAnalytics(response.data);
     } catch (error) {
       console.error('Error fetching analytics:', error);
@@ -52,7 +52,7 @@ const AdminDashboard = () => {
 
   const fetchUsers = async () => {
     try {
-      const response = await axios.get('/users');
+      const response = await api.get('/users');
       setUsers(response.data);
     } catch (error) {
       console.error('Error fetching users:', error);
@@ -62,7 +62,7 @@ const AdminDashboard = () => {
 
   const fetchQueue = async () => {
     try {
-      const response = await axios.get('/queue');
+      const response = await api.get('/queue');
       setQueueData(response.data.queue || []);
     } catch (error) {
       console.error('Error fetching queue:', error);
@@ -85,7 +85,7 @@ const AdminDashboard = () => {
     setLoading(true);
     
     try {
-      await axios.post('/users/create-staff', createUserForm);
+      await api.post('/users/create-staff', createUserForm);
       toast.success('User created successfully!');
       setShowCreateUserDialog(false);
       setCreateUserForm({ name: '', email: '', phone: '', password: '', role: 'staff' });

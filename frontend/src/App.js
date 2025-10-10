@@ -40,7 +40,9 @@ export const AuthProvider = ({ children }) => {
     if (token) {
       // Verify token validity
       api.get('/auth/me').then(response => {
-        setUser(response.data);
+        // Backend returns { user: {...} } — normalize to plain user object
+        const normalizedUser = response.data?.user ?? response.data;
+        setUser(normalizedUser);
       }).catch(() => {
         logout();
       }).finally(() => {

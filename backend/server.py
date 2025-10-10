@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, status
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, status, WebSocket, WebSocketDisconnect
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
@@ -13,14 +13,15 @@ from datetime import datetime, timezone, timedelta
 from passlib.context import CryptContext
 import jwt
 from enum import IntEnum, Enum
+import json
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
 # MongoDB connection
-mongo_url = os.environ['MONGO_URL']
+mongo_url = os.environ.get('MONGO_URL', 'mongodb://localhost:27017')
 client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ['DB_NAME']]
+db = client[os.environ.get('DB_NAME', 'hospital_management')]
 
 # Security
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -41,8 +42,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Mount the API router
-app.include_router(api_router)
+# Note: api_router will be defined later in the file
 
 # Add health check endpoint at root level
 @app.get("/health")
@@ -69,8 +69,78 @@ async def health_check():
         }
     }
 
-# Create a router with the /api prefix
-api_router = APIRouter(prefix="/api")
+# Create a router without extra prefix (mounted at /api/v1 below)
+api_router = APIRouter()
+
+# WebSocket Connection Manager
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: Dict[str, List[WebSocket]] = {
+            'patient': [],
+            'staff': [],
+            'admin': []
+        }
+        self.user_connections: Dict[str, WebSocket] = {}
+
+    async def connect(self, websocket: WebSocket, user_id: str, user_role: str):
+        await websocket.accept()
+        self.user_connections[user_id] = websocket
+        self.active_connections[user_role].append(websocket)
+        logging.info(f"User {user_id} ({user_role}) connected. Total connections: {len(self.user_connections)}")
+
+    def disconnect(self, websocket: WebSocket, user_id: str, user_role: str):
+        if user_id in self.user_connections:
+            del self.user_connections[user_id]
+        if websocket in self.active_connections[user_role]:
+            self.active_connections[user_role].remove(websocket)
+        logging.info(f"User {user_id} ({user_role}) disconnected. Total connections: {len(self.user_connections)}")
+
+    async def send_personal_message(self, message: str, user_id: str):
+        if user_id in self.user_connections:
+            try:
+                await self.user_connections[user_id].send_text(message)
+            except Exception as e:
+                logging.error(f"Error sending message to user {user_id}: {e}")
+
+    async def broadcast_to_role(self, message: str, role: str):
+        if role in self.active_connections:
+            disconnected = []
+            for connection in self.active_connections[role]:
+                try:
+                    await connection.send_text(message)
+                except Exception as e:
+                    logging.error(f"Error broadcasting to {role}: {e}")
+                    disconnected.append(connection)
+            
+            # Remove disconnected connections
+            for connection in disconnected:
+                if connection in self.active_connections[role]:
+                    self.active_connections[role].remove(connection)
+
+    async def send_queue_update(self, queue_data: List[Dict[str, Any]]):
+        """Send queue update to all staff and admin users"""
+        message = json.dumps({
+            "type": "queue_update",
+            "data": queue_data
+        })
+        await self.broadcast_to_role(message, "staff")
+        await self.broadcast_to_role(message, "admin")
+
+    async def send_token_update(self, token_data: Dict[str, Any], user_id: str = None):
+        """Send token update to specific user or all relevant users"""
+        message = json.dumps({
+            "type": "token_update",
+            "data": token_data
+        })
+        
+        if user_id:
+            await self.send_personal_message(message, user_id)
+        
+        await self.broadcast_to_role(message, "staff")
+        await self.broadcast_to_role(message, "admin")
+
+# Global connection manager
+manager = ConnectionManager()
 
 # Enums
 class UserRole(str, Enum):
@@ -151,7 +221,14 @@ def hash_password(password: str) -> str:
     return pwd_context.hash(password)
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    return pwd_context.verify(plain_password, hashed_password)
+    # Some existing users may have empty/invalid hashes; guard to avoid 500
+    if not hashed_password or not isinstance(hashed_password, str):
+        return False
+    try:
+        return pwd_context.verify(plain_password, hashed_password)
+    except Exception:
+        # UnknownHashError or backend issues should not 500 the request
+        return False
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     to_encode = data.copy()
@@ -353,6 +430,26 @@ async def create_token(token_data: TokenCreate, current_user: User = Depends(get
     )
     
     await db.tokens.insert_one(token.dict())
+    
+    # Send real-time update to all connected users
+    await manager.send_token_update(token.dict(), current_user.id)
+    
+    # Send queue update to staff/admin
+    queue_tokens = await db.tokens.find({"status": TokenStatus.ACTIVE}).sort("position", 1).to_list(1000)
+    queue_data = []
+    for t in queue_tokens:
+        queue_data.append({
+            "token_id": t["id"],
+            "token_number": t["token_number"],
+            "patient_name": t["patient_name"],
+            "priority_level": t["priority_level"],
+            "position": t["position"],
+            "estimated_wait_time": t["estimated_wait_time"],
+            "status": t["status"],
+            "created_at": t["created_at"]
+        })
+    await manager.send_queue_update(queue_data)
+    
     return token
 
 @api_router.get("/tokens/{token_id}")
@@ -426,6 +523,25 @@ async def complete_token(token_id: str, current_user: User = Depends(get_current
         },
         {"$inc": {"position": -1}}
     )
+    
+    # Send real-time update
+    await manager.send_token_update({"id": token_id, "status": "completed"}, token["patient_id"])
+    
+    # Send updated queue to staff/admin
+    queue_tokens = await db.tokens.find({"status": TokenStatus.ACTIVE}).sort("position", 1).to_list(1000)
+    queue_data = []
+    for t in queue_tokens:
+        queue_data.append({
+            "token_id": t["id"],
+            "token_number": t["token_number"],
+            "patient_name": t["patient_name"],
+            "priority_level": t["priority_level"],
+            "position": t["position"],
+            "estimated_wait_time": t["estimated_wait_time"],
+            "status": t["status"],
+            "created_at": t["created_at"]
+        })
+    await manager.send_queue_update(queue_data)
     
     return {"message": "Token completed successfully"}
 
@@ -599,15 +715,20 @@ async def get_dashboard_analytics(current_user: User = Depends(get_current_staff
     }
 
 # Include the router in the main app
-app.include_router(api_router)
+app.include_router(api_router, prefix="/api/v1")
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_credentials=True,
-    allow_origins=os.environ.get('CORS_ORIGINS', '*').split(','),
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# WebSocket endpoint for real-time updates
+@app.websocket("/ws/{user_id}/{user_role}")
+async def websocket_endpoint(websocket: WebSocket, user_id: str, user_role: str):
+    await manager.connect(websocket, user_id, user_role)
+    try:
+        while True:
+            # Keep connection alive and handle any incoming messages
+            data = await websocket.receive_text()
+            # Echo back for connection testing
+            await websocket.send_text(f"Echo: {data}")
+    except WebSocketDisconnect:
+        manager.disconnect(websocket, user_id, user_role)
 
 # Configure logging
 logging.basicConfig(

@@ -37,6 +37,9 @@ app.add_middleware(
     expose_headers=["Content-Type"]
 )
 
+# Include the API router
+app.include_router(api_router, prefix=settings.API_V1_STR)
+
 # Startup and shutdown events
 @app.on_event("startup")
 async def startup_db_client():
@@ -45,9 +48,6 @@ async def startup_db_client():
 @app.on_event("shutdown")
 async def shutdown_db_client():
     await close_mongo_connection()
-
-# Include API router
-app.include_router(api_router, prefix=settings.API_V1_STR)
 
 @app.get("/")
 async def root():

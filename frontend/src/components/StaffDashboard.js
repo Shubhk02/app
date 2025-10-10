@@ -9,7 +9,8 @@ import { Badge } from '@/components/ui/badge';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
 import { toast } from 'sonner';
-import axios from 'axios';
+import api from '../utils/api';
+import useWebSocket from '../hooks/useWebSocket';
 
 const StaffDashboard = () => {
   const { user, logout } = useAuth();
@@ -19,6 +20,10 @@ const StaffDashboard = () => {
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [showPriorityDialog, setShowPriorityDialog] = useState(false);
   const [analytics, setAnalytics] = useState(null);
+  
+  // WebSocket connection for real-time updates
+  const wsUrl = user ? `ws://localhost:8000/ws/${user.id}/${user.role}` : null;
+  const { isConnected, lastMessage, error } = useWebSocket(wsUrl);
 
   const [tokenForm, setTokenForm] = useState({
     patient_name: '',
@@ -54,18 +59,41 @@ const StaffDashboard = () => {
     fetchQueue();
     fetchAnalytics();
     
-    // Set up polling for real-time updates
+    // Set up polling for real-time updates (fallback)
     const interval = setInterval(() => {
       fetchQueue();
       fetchAnalytics();
-    }, 30000); // Poll every 30 seconds
+    }, 60000); // Poll every 60 seconds as fallback
 
     return () => clearInterval(interval);
   }, []);
 
+  // Handle WebSocket messages for real-time updates
+  useEffect(() => {
+    if (lastMessage) {
+      switch (lastMessage.type) {
+        case 'queue_update':
+          // Update queue data in real-time
+          setQueueData(lastMessage.data);
+          break;
+        case 'token_update':
+          // Refresh queue when tokens are created/updated
+          fetchQueue();
+          fetchAnalytics();
+          break;
+        case 'analytics_update':
+          // Update analytics in real-time
+          setAnalytics(lastMessage.data);
+          break;
+        default:
+          break;
+      }
+    }
+  }, [lastMessage]);
+
   const fetchQueue = async () => {
     try {
-      const response = await axios.get('/queue');
+      const response = await api.get('/queue');
       setQueueData(response.data.queue || []);
     } catch (error) {
       console.error('Error fetching queue:', error);
@@ -75,7 +103,7 @@ const StaffDashboard = () => {
 
   const fetchAnalytics = async () => {
     try {
-      const response = await axios.get('/analytics/dashboard');
+      const response = await api.get('/analytics/dashboard');
       setAnalytics(response.data);
     } catch (error) {
       console.error('Error fetching analytics:', error);
@@ -98,7 +126,7 @@ const StaffDashboard = () => {
     setLoading(true);
     
     try {
-      const response = await axios.post('/tokens', {
+      const response = await api.post('/tokens', {
         ...tokenForm,
         patient_id: `staff_created_${Date.now()}` // Unique ID for staff-created tokens
       });
@@ -116,7 +144,7 @@ const StaffDashboard = () => {
 
   const handleCompleteToken = async (tokenId) => {
     try {
-      await axios.put(`/tokens/${tokenId}/complete`);
+      await api.put(`/tokens/${tokenId}/complete`);
       toast.success('Token marked as completed');
       fetchQueue();
       fetchAnalytics();
@@ -129,7 +157,7 @@ const StaffDashboard = () => {
     e.preventDefault();
     
     try {
-      await axios.put(`/tokens/${priorityForm.token_id}/priority?new_priority=${priorityForm.new_priority}`);
+      await api.put(`/tokens/${priorityForm.token_id}/priority?new_priority=${priorityForm.new_priority}`);
       toast.success('Token priority updated successfully');
       setShowPriorityDialog(false);
       setPriorityForm({ new_priority: '', token_id: '' });
